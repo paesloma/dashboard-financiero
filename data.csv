@@ -1,1 +1,2 @@
-Fecha;Tipo;Descripcion;Monto;Usuario
+Fecha;Tipo;Descripcion;Monto;Usuario,Fecha,Tipo,Descripcion,Monto,Usuario
+,2025-12-15,Ingreso,DEPOSITO INICIAL,1500.0,Master
