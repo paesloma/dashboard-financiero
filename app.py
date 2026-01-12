@@ -6,7 +6,7 @@ import datetime
 import plotly.express as px
 
 # --- CONFIGURACIÓN ---
-TOKEN = "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"
+TOKEN = st.secrets["GITHUB_TOKEN"] 
 REPO_NAME = "paesloma/dashboard-financiero"
 FILE_PATH = "data.csv"
 
@@ -17,19 +17,14 @@ def obtener_datos():
         contents = repo.get_contents(FILE_PATH)
         df = pd.read_csv(StringIO(contents.decoded_content.decode("utf-8")))
         
-        # LIMPIEZA CRÍTICA: Eliminar columnas vacías producidas por comas extra
+        # Limpieza de comas iniciales (evita el KeyError: 'Tipo')
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
-        
-        # Asegurar que las columnas tengan el nombre correcto y sin espacios
         df.columns = [c.strip() for c in df.columns]
-        
-        # Convertir Monto a número y Fecha a string para evitar errores
         df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
-        df['Tipo'] = df['Tipo'].astype(str).str.strip()
         
         return df, contents.sha
     except Exception as e:
-        st.error(f"Error al obtener datos: {e}")
+        st.error(f"Error 401 (Credenciales) o de archivo: {e}")
         return pd.DataFrame(columns=["Fecha", "Tipo", "Descripcion", "Monto", "Usuario"]), None
 
 def guardar_datos(df, sha):
@@ -51,59 +46,46 @@ if not st.session_state.auth:
     pwd = st.text_input("Contraseña", type="password")
     if st.button("Entrar"):
         if pwd in ["1602", "160232"]:
-            st.session_state.auth = True
-            st.session_state.es_master = (pwd == "160232")
+            st.session_state.auth, st.session_state.master = True, (pwd == "160232")
             st.rerun()
 else:
     df, sha = obtener_datos()
     
-    # --- CÁLCULOS ---
+    # Saldo y Gráfico de Barras
     ingresos = df[df['Tipo'] == 'Ingreso']['Monto'].sum()
     egresos = df[df['Tipo'] == 'Egreso']['Monto'].sum()
-    saldo = ingresos - egresos
+    st.metric("💰 Saldo Actual", f"${(ingresos - egresos):,.2f}")
 
-    st.title(f"💰 Saldo Actual: ${saldo:,.2f}")
-
-    # --- SOLUCIÓN AL GRÁFICO ---
-    st.subheader("📊 Gráfico de Barras: Ingresos vs Egresos")
     if not df.empty:
-        # Agrupamos datos para el gráfico
-        df_grafico = df.groupby('Tipo')['Monto'].sum().reset_index()
-        fig = px.bar(df_grafico, x='Tipo', y='Monto', color='Tipo',
-                     color_discrete_map={'Ingreso': '#28a745', 'Egreso': '#dc3545'},
-                     text_auto='.2s')
+        st.subheader("📊 Gráfico de Barras")
+        resumen = df.groupby('Tipo')['Monto'].sum().reset_index()
+        fig = px.bar(resumen, x='Tipo', y='Monto', color='Tipo', 
+                     color_discrete_map={'Ingreso':'#28a745','Egreso':'#dc3545'})
         st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("No hay datos suficientes para generar el gráfico.")
 
-    # --- SOLUCIÓN A LA FECHA (MODO MASTER) ---
-    if st.session_state.es_master:
-        with st.expander("📝 Registrar Nuevo Movimiento"):
-            with st.form("form_registro"):
+    # --- REGISTRO CON FECHA EDITABLE ---
+    if st.session_state.master:
+        with st.expander("📝 Registrar Movimiento"):
+            with st.form("nuevo"):
                 col1, col2 = st.columns(2)
+                # Aquí puedes editar la fecha manualmente
+                fecha_edit = col1.date_input("Fecha de Registro", datetime.date.today())
                 tipo_n = col1.selectbox("Tipo", ["Ingreso", "Egreso"])
-                monto_n = col1.number_input("Monto", min_value=0.0)
+                monto_n = col2.number_input("Monto", min_value=0.0)
                 desc_n = col2.text_input("Descripción")
-                # Se genera la fecha automáticamente aquí
-                fecha_n = datetime.date.today().strftime("%Y-%m-%d") 
                 
                 if st.form_submit_button("Guardar Movimiento"):
-                    nueva_fila = pd.DataFrame([{
-                        "Fecha": fecha_n, 
+                    nueva = pd.DataFrame([{
+                        "Fecha": fecha_edit.strftime("%Y-%m-%d"), 
                         "Tipo": tipo_n, 
                         "Descripcion": desc_n, 
                         "Monto": monto_n, 
                         "Usuario": "Master"
                     }])
-                    df = pd.concat([df, nueva_fila], ignore_index=True)
+                    df = pd.concat([df, nueva], ignore_index=True)
                     if guardar_datos(df, sha):
-                        st.success(f"✅ Registrado con fecha: {fecha_n}")
+                        st.success(f"Guardado con fecha: {fecha_edit}")
                         st.rerun()
 
-    # REGLA: SIEMPRE MOSTRAR LA TABLA
-    st.subheader("📋 Historial de Órdenes")
-    st.table(df)
-
-    if st.button("Salir"):
-        st.session_state.auth = False
-        st.rerun()
+    st.subheader("📋 Registro de Órdenes")
+    st.table(df) # Siempre mostrar la tabla
