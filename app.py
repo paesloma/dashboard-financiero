@@ -5,8 +5,7 @@ from io import StringIO
 import datetime
 import plotly.express as px
 
-# --- CONFIGURACIÓN DIRECTA ---
-# Usando tu último token generado
+# --- CONFIGURACIÓN CON TU NUEVO TOKEN ---
 TOKEN = "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"
 REPO_NAME = "paesloma/dashboard-financiero"
 FILE_PATH = "data.csv"
@@ -19,20 +18,20 @@ def obtener_datos():
         raw_data = contents.decoded_content.decode("utf-8")
         
         # --- SOLUCIÓN AL KEYERROR (Limpieza de comas extra) ---
-        # Leemos el CSV e ignoramos columnas sin nombre creadas por comas al inicio
+        # Leemos el CSV e ignoramos columnas vacías generadas por comas al inicio
         df = pd.read_csv(StringIO(raw_data))
         df = df.loc[:, ~df.columns.str.contains('^Unnamed')]
         df.columns = [c.strip() for c in df.columns]
         
-        # Re-alineación forzada si el CSV está muy dañado
+        # Si las columnas están desplazadas, forzamos el orden correcto
         cols_necesarias = ["Fecha", "Tipo", "Descripcion", "Monto", "Usuario"]
-        if not all(c in df.columns for c in cols_necesarias):
-            df = pd.read_csv(StringIO(raw_data), names=cols_necesarias, skiprows=1)
+        if not all(c in df.columns for c in cols_necesarias) and len(df.columns) >= 5:
+            df = df.iloc[:, -5:]
+            df.columns = cols_necesarias
             
         df['Monto'] = pd.to_numeric(df['Monto'], errors='coerce').fillna(0)
         return df, contents.sha
     except Exception as e:
-        # Muestra el error de forma clara para diagnóstico
         st.error(f"Error de conexión (401) o formato: {e}")
         return pd.DataFrame(columns=["Fecha", "Tipo", "Descripcion", "Monto", "Usuario"]), None
 
@@ -40,7 +39,7 @@ def guardar_datos(df, sha):
     try:
         g = Github(TOKEN)
         repo = g.get_repo(REPO_NAME)
-        # Guardamos sin índice y con formato limpio
+        # Guardamos el CSV limpio sin índices para evitar futuros errores
         csv_data = df.to_csv(index=False)
         repo.update_file(FILE_PATH, f"Sync {datetime.datetime.now()}", csv_data, sha)
         return True
@@ -48,7 +47,7 @@ def guardar_datos(df, sha):
         st.error(f"Error al guardar: {e}")
         return False
 
-# --- INTERFAZ ---
+# --- LÓGICA DE INTERFAZ ---
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
@@ -62,10 +61,12 @@ if not st.session_state.auth:
 else:
     df, sha = obtener_datos()
     
-    # Saldo
+    # Cálculos seguros de Saldo
     ingresos = df[df['Tipo'].str.strip() == 'Ingreso']['Monto'].sum()
     egresos = df[df['Tipo'].str.strip() == 'Egreso']['Monto'].sum()
-    st.title(f"💰 Saldo Actual: ${ (ingresos - egresos):,.2f }")
+    saldo = ingresos - egresos
+
+    st.title(f"💰 Saldo Actual: ${saldo:,.2f}")
 
     # --- GRÁFICO DE BARRAS (SIEMPRE GENERAR) ---
     if not df.empty:
@@ -76,25 +77,31 @@ else:
                      text_auto='.2s')
         st.plotly_chart(fig, use_container_width=True)
 
-    # --- REGISTRO CON FECHA EDITABLE ---
+    # --- REGISTRO CON FECHA EDITABLE (SOLO MASTER) ---
     if st.session_state.es_master:
         with st.expander("📝 Registrar Movimiento"):
-            with st.form("nuevo"):
-                f_edit = st.date_input("Fecha", datetime.date.today())
-                t_mov = st.selectbox("Tipo", ["Ingreso", "Egreso"])
-                m_mov = st.number_input("Monto", min_value=0.0)
-                d_mov = st.text_input("Descripción")
+            with st.form("nuevo_registro"):
+                col1, col2 = st.columns(2)
+                f_edit = col1.date_input("Fecha", datetime.date.today())
+                t_mov = col1.selectbox("Tipo", ["Ingreso", "Egreso"])
+                m_mov = col2.number_input("Monto", min_value=0.0)
+                d_mov = col2.text_input("Descripción")
+                
                 if st.form_submit_button("Guardar"):
-                    nueva = pd.DataFrame([{
+                    nueva_fila = pd.DataFrame([{
                         "Fecha": f_edit.strftime("%Y-%m-%d"),
                         "Tipo": t_mov, "Descripcion": d_mov, 
                         "Monto": m_mov, "Usuario": "Master"
                     }])
-                    df = pd.concat([df, nueva], ignore_index=True)
-                    if guardar_datos(df, sha):
-                        st.success("Guardado")
+                    df_final = pd.concat([df, nueva_fila], ignore_index=True)
+                    if guardar_datos(df_final, sha):
+                        st.success("✅ Datos sincronizados con GitHub")
                         st.rerun()
 
-    # SIEMPRE MOSTRAR TABLA
+    # SIEMPRE MOSTRAR LA TABLA
     st.subheader("📋 Registro de Órdenes")
     st.table(df)
+
+    if st.button("Cerrar Sesión"):
+        st.session_state.auth = False
+        st.rerun()
